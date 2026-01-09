@@ -1,8 +1,23 @@
 fastapi
-uvicorn
+uvicorn[standard]
 gunicorn
-azure-data-tables
+
+# Auth & security
 pydantic
+python-jose[cryptography]
 passlib[bcrypt]
 bcrypt==4.0.1
-python-jose[cryptography]
+
+# ML / Data
+torch
+torchvision
+pandas
+pillow
+faiss-cpu
+
+# Azure
+azure-data-tables
+azure-storage-blob
+
+# CLIP
+git+https://github.com/openai/CLIP.git

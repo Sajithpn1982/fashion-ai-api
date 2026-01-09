@@ -1,0 +1,14 @@
+DATA_CONTAINER = "fashion-data"
+
+METADATA_BLOB = "metadata/metadata.csv"
+IMAGE_PREFIX = "images/"
+ARTIFACT_PREFIX = "artifacts/"
+
+MODEL_NAME = "ViT-B/32"
+
+SIM_WEIGHT = 0.6
+TREND_WEIGHT = 0.25
+RECENCY_WEIGHT = 0.15
+
+TOP_K_CANDIDATES = 20
+TOP_K_RESULTS = 5
