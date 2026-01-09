@@ -24,47 +24,47 @@ model.eval()
 
 # ------------------ Load metadata ------------------
 
-df = pd.read_csv(download_blob(METADATA_BLOB))
-df["release_date"] = pd.to_datetime(df["release_date"])
+# df = pd.read_csv(download_blob(METADATA_BLOB))
+# df["release_date"] = pd.to_datetime(df["release_date"])
 
-# ------------------ Load embeddings ------------------
+# # ------------------ Load embeddings ------------------
 
-embeddings = np.frombuffer(
-    download_blob(f"{ARTIFACT_PREFIX}embeddings.npy").read(),
-    dtype="float32"
-).reshape(len(df), -1)
+# embeddings = np.frombuffer(
+#     download_blob(f"{ARTIFACT_PREFIX}embeddings.npy").read(),
+#     dtype="float32"
+# ).reshape(len(df), -1)
 
-# ------------------ Load FAISS index ------------------
+# # ------------------ Load FAISS index ------------------
 
-index = faiss.read_index(
-    download_blob(f"{ARTIFACT_PREFIX}faiss.index")
-)
+# index = faiss.read_index(
+#     download_blob(f"{ARTIFACT_PREFIX}faiss.index")
+# )
 
-# ------------------ Scoring ------------------
+# # ------------------ Scoring ------------------
 
-def normalize(x):
-    return (x - x.min()) / (x.max() - x.min() + 1e-6)
+# def normalize(x):
+#     return (x - x.min()) / (x.max() - x.min() + 1e-6)
 
-df["trend_score"] = normalize(df["popularity"])
-df["recency_days"] = (datetime.now() - df["release_date"]).dt.days
-df["recency_score"] = 1 - normalize(df["recency_days"])
+# df["trend_score"] = normalize(df["popularity"])
+# df["recency_days"] = (datetime.now() - df["release_date"]).dt.days
+# df["recency_score"] = 1 - normalize(df["recency_days"])
 
-def rank(vec):
-    scores, ids = index.search(vec, TOP_K_CANDIDATES)
-    c = df.iloc[ids[0]].copy()
-    c["similarity"] = scores[0]
+# def rank(vec):
+#     scores, ids = index.search(vec, TOP_K_CANDIDATES)
+#     c = df.iloc[ids[0]].copy()
+#     c["similarity"] = scores[0]
 
-    c["final_score"] = (
-        SIM_WEIGHT * c["similarity"]
-        + TREND_WEIGHT * c["trend_score"]
-        + RECENCY_WEIGHT * c["recency_score"]
-    )
+#     c["final_score"] = (
+#         SIM_WEIGHT * c["similarity"]
+#         + TREND_WEIGHT * c["trend_score"]
+#         + RECENCY_WEIGHT * c["recency_score"]
+#     )
 
-    return (
-        c.sort_values("final_score", ascending=False)
-         .head(TOP_K_RESULTS)
-         .to_dict("records")
-    )
+#     return (
+#         c.sort_values("final_score", ascending=False)
+#          .head(TOP_K_RESULTS)
+#          .to_dict("records")
+#     )
 
 # ------------------ Routes ------------------
 
