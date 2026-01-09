@@ -1,23 +1,40 @@
-fastapi
-uvicorn[standard]
-gunicorn
+# -------------------------------
+# Web framework & server
+# -------------------------------
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+gunicorn==21.2.0
 
+# -------------------------------
 # Auth & security
-pydantic
-python-jose[cryptography]
-passlib[bcrypt]
+# -------------------------------
+pydantic==2.6.4
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 
-# ML / Data
-torch
-torchvision
-pandas
-pillow
-faiss-cpu
+# -------------------------------
+# Data & ML (CPU only)
+# -------------------------------
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+pandas==2.2.1
+pillow==10.2.0
+faiss-cpu==1.7.4
 
+# -------------------------------
 # Azure
-azure-data-tables
-azure-storage-blob
+# -------------------------------
+azure-data-tables==12.5.0
+azure-storage-blob==12.19.1
 
+# -------------------------------
+# Utilities
+# -------------------------------
+python-dotenv==1.0.1
+requests==2.31.0
+
+# -------------------------------
 # CLIP
+# -------------------------------
 git+https://github.com/openai/CLIP.git
