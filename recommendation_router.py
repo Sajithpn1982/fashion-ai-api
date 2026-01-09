@@ -4,7 +4,7 @@ import faiss
 import pandas as pd
 import numpy as np
 from PIL import Image
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from datetime import datetime
 
 from azure_blob import download_blob
@@ -17,37 +17,54 @@ router = APIRouter(
     tags=["Fashion Recommendation"]
 )
 
-# ------------------ Load model ------------------
+# =====================================================
+#  GLOBALS (start empty – VERY IMPORTANT)
+# =====================================================
 
-model, preprocess = clip.load(MODEL_NAME, device=DEVICE)
-model.eval()
+model = None
+preprocess = None
+df = None
+index = None
 
-# ------------------ Load metadata ------------------
+# =====================================================
+#  LAZY LOADER
+# =====================================================
 
-# df = pd.read_csv(download_blob(METADATA_BLOB))
-# df["release_date"] = pd.to_datetime(df["release_date"])
+def load_resources():
+    global model, preprocess, df, index
 
-# # ------------------ Load embeddings ------------------
+    # Prevent double-loading
+    if model is not None:
+        return
 
-# embeddings = np.frombuffer(
-#     download_blob(f"{ARTIFACT_PREFIX}embeddings.npy").read(),
-#     dtype="float32"
-# ).reshape(len(df), -1)
+    print("🔄 Loading ML resources...")
 
-# # ------------------ Load FAISS index ------------------
+    # ---- CLIP ----
+    model, preprocess = clip.load(MODEL_NAME, device=DEVICE)
+    model.eval()
 
-# index = faiss.read_index(
-#     download_blob(f"{ARTIFACT_PREFIX}faiss.index")
-# )
+    # ---- Metadata ----
+    # df = pd.read_csv(download_blob(METADATA_BLOB))
+    # df["release_date"] = pd.to_datetime(df["release_date"])
 
-# # ------------------ Scoring ------------------
+    # ---- FAISS ----
+    # index = faiss.read_index(
+    #     download_blob(f"{ARTIFACT_PREFIX}faiss.index")
+    # )
 
-# def normalize(x):
-#     return (x - x.min()) / (x.max() - x.min() + 1e-6)
+    # ---- Scoring ----
+    # def normalize(x):
+    #     return (x - x.min()) / (x.max() - x.min() + 1e-6)
 
-# df["trend_score"] = normalize(df["popularity"])
-# df["recency_days"] = (datetime.now() - df["release_date"]).dt.days
-# df["recency_score"] = 1 - normalize(df["recency_days"])
+    # df["trend_score"] = normalize(df["popularity"])
+    # df["recency_days"] = (datetime.now() - df["release_date"]).dt.days
+    # df["recency_score"] = 1 - normalize(df["recency_days"])
+
+    print("ML resources loaded")
+
+# =====================================================
+#  HELPERS
+# =====================================================
 
 # def rank(vec):
 #     scores, ids = index.search(vec, TOP_K_CANDIDATES)
@@ -66,10 +83,13 @@ model.eval()
 #          .to_dict("records")
 #     )
 
-# ------------------ Routes ------------------
+# =====================================================
+#  ROUTES
+# =====================================================
 
 @router.get("/trending")
 def trending():
+    load_resources()
     return (
         df.sort_values("trend_score", ascending=False)
           .head(TOP_K_RESULTS)
@@ -79,6 +99,7 @@ def trending():
 
 @router.get("/latest")
 def latest():
+    load_resources()
     return (
         df.sort_values("recency_score", ascending=False)
           .head(TOP_K_RESULTS)
@@ -88,8 +109,9 @@ def latest():
 
 @router.get("/recommend/text")
 def recommend_text(query: str):
-    tokens = clip.tokenize([query]).to(DEVICE)
+    load_resources()
 
+    tokens = clip.tokenize([query]).to(DEVICE)
     with torch.no_grad():
         vec = model.encode_text(tokens)
 
@@ -99,6 +121,8 @@ def recommend_text(query: str):
 
 @router.post("/recommend/image")
 async def recommend_image(file: UploadFile = File(...)):
+    load_resources()
+
     image = preprocess(
         Image.open(file.file).convert("RGB")
     ).unsqueeze(0).to(DEVICE)
@@ -115,6 +139,8 @@ async def recommend_hybrid(
     file: UploadFile = File(...),
     query: str = ""
 ):
+    load_resources()
+
     image = preprocess(
         Image.open(file.file).convert("RGB")
     ).unsqueeze(0).to(DEVICE)
