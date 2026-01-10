@@ -1,14 +1,14 @@
 import torch
-import clip
 import faiss
-import pandas as pd
 import numpy as np
+import pickle
+import open_clip
+
 from PIL import Image
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from datetime import datetime
+from fastapi import APIRouter, UploadFile, File, Form
 
 from azure_blob import download_blob
-from config import *
+from config import TOP_K_RESULTS
 
 DEVICE = "cpu"
 
@@ -18,141 +18,118 @@ router = APIRouter(
 )
 
 # =====================================================
-#  GLOBALS (start empty – VERY IMPORTANT)
+# GLOBALS (LAZY-LOADED)
 # =====================================================
 
-model = None
-preprocess = None
-df = None
-index = None
+_model = None
+_preprocess = None
+_tokenizer = None
+_index = None
+_metadata = None
 
 # =====================================================
-#  LAZY LOADER
+# LAZY LOADER (RUNS ON FIRST REQUEST ONLY)
 # =====================================================
 
 def load_resources():
-    global model, preprocess, df, index
+    global _model, _preprocess, _tokenizer, _index, _metadata
 
-    # Prevent double-loading
-    if model is not None:
+    if _model is not None:
         return
 
-    print("🔄 Loading ML resources...")
+    print("🔄 Lazy loading CLIP + FAISS...")
 
-    # ---- CLIP ----
-    model, preprocess = clip.load(MODEL_NAME, device=DEVICE)
-    model.eval()
-
-    # ---- Metadata ----
-    # df = pd.read_csv(download_blob(METADATA_BLOB))
-    # df["release_date"] = pd.to_datetime(df["release_date"])
-
-    # ---- FAISS ----
-    # index = faiss.read_index(
-    #     download_blob(f"{ARTIFACT_PREFIX}faiss.index")
-    # )
-
-    # ---- Scoring ----
-    # def normalize(x):
-    #     return (x - x.min()) / (x.max() - x.min() + 1e-6)
-
-    # df["trend_score"] = normalize(df["popularity"])
-    # df["recency_days"] = (datetime.now() - df["release_date"]).dt.days
-    # df["recency_score"] = 1 - normalize(df["recency_days"])
-
-    print("ML resources loaded")
-
-# =====================================================
-#  HELPERS
-# =====================================================
-
-# def rank(vec):
-#     scores, ids = index.search(vec, TOP_K_CANDIDATES)
-#     c = df.iloc[ids[0]].copy()
-#     c["similarity"] = scores[0]
-
-#     c["final_score"] = (
-#         SIM_WEIGHT * c["similarity"]
-#         + TREND_WEIGHT * c["trend_score"]
-#         + RECENCY_WEIGHT * c["recency_score"]
-#     )
-
-#     return (
-#         c.sort_values("final_score", ascending=False)
-#          .head(TOP_K_RESULTS)
-#          .to_dict("records")
-#     )
-
-# =====================================================
-#  ROUTES
-# =====================================================
-
-@router.get("/trending")
-def trending():
-    load_resources()
-    return (
-        df.sort_values("trend_score", ascending=False)
-          .head(TOP_K_RESULTS)
-          .to_dict("records")
+    # ---- OpenCLIP ----
+    _model, _, _preprocess = open_clip.create_model_and_transforms(
+        model_name="ViT-B-32",
+        pretrained="openai"
     )
+    _model = _model.to(DEVICE)
+    _model.eval()
 
+    _tokenizer = open_clip.get_tokenizer("ViT-B-32")
 
-@router.get("/latest")
-def latest():
-    load_resources()
-    return (
-        df.sort_values("recency_score", ascending=False)
-          .head(TOP_K_RESULTS)
-          .to_dict("records")
-    )
+    # ---- FAISS + METADATA (cached in /tmp) ----
+    index_path = download_blob("image_embeddings.faiss")
+    meta_path = download_blob("metadata.pkl")
 
+    _index = faiss.read_index(index_path)
+
+    with open(meta_path, "rb") as f:
+        _metadata = pickle.load(f)
+
+    if _index.ntotal != len(_metadata):
+        raise RuntimeError(
+            f"FAISS index ({_index.ntotal}) != metadata ({len(_metadata)})"
+        )
+
+    print(f"✅ Loaded {_index.ntotal} embeddings")
+
+# =====================================================
+# HELPERS
+# =====================================================
+
+def _normalize(vec: torch.Tensor) -> np.ndarray:
+    vec = vec / vec.norm(dim=-1, keepdim=True)
+    return vec.cpu().numpy().astype("float32")
+
+def _encode_text(text: str) -> np.ndarray:
+    tokens = _tokenizer([text]).to(DEVICE)
+    with torch.no_grad():
+        emb = _model.encode_text(tokens)
+    return _normalize(emb)
+
+def _encode_image(image: Image.Image) -> np.ndarray:
+    img = _preprocess(image).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        emb = _model.encode_image(img)
+    return _normalize(emb)
+
+def _rank(vec: np.ndarray, k: int):
+    scores, ids = _index.search(vec, k)
+    results = []
+
+    for score, idx in zip(scores[0], ids[0]):
+        item = _metadata[idx].copy()
+        item["similarity"] = float(score)
+        results.append(item)
+
+    return results
+
+# =====================================================
+# ROUTES
+# =====================================================
 
 @router.get("/recommend/text")
-def recommend_text(query: str):
+def recommend_text(query: str, k: int = TOP_K_RESULTS):
     load_resources()
-
-    tokens = clip.tokenize([query]).to(DEVICE)
-    with torch.no_grad():
-        vec = model.encode_text(tokens)
-
-    vec /= vec.norm(dim=-1, keepdim=True)
-    return rank(vec.cpu().numpy().astype("float32"))
-
+    vec = _encode_text(query)
+    return _rank(vec, k)
 
 @router.post("/recommend/image")
-async def recommend_image(file: UploadFile = File(...)):
+async def recommend_image(
+    file: UploadFile = File(...),
+    k: int = TOP_K_RESULTS
+):
     load_resources()
-
-    image = preprocess(
-        Image.open(file.file).convert("RGB")
-    ).unsqueeze(0).to(DEVICE)
-
-    with torch.no_grad():
-        vec = model.encode_image(image)
-
-    vec /= vec.norm(dim=-1, keepdim=True)
-    return rank(vec.cpu().numpy().astype("float32"))
-
+    image = Image.open(file.file).convert("RGB")
+    vec = _encode_image(image)
+    return _rank(vec, k)
 
 @router.post("/recommend/hybrid")
 async def recommend_hybrid(
     file: UploadFile = File(...),
-    query: str = ""
+    query: str = Form(...),
+    k: int = TOP_K_RESULTS
 ):
     load_resources()
 
-    image = preprocess(
-        Image.open(file.file).convert("RGB")
-    ).unsqueeze(0).to(DEVICE)
+    image = Image.open(file.file).convert("RGB")
 
-    tokens = clip.tokenize([query]).to(DEVICE)
-
-    with torch.no_grad():
-        iv = model.encode_image(image)
-        tv = model.encode_text(tokens)
-
-    iv /= iv.norm(dim=-1, keepdim=True)
-    tv /= tv.norm(dim=-1, keepdim=True)
+    iv = _encode_image(image)
+    tv = _encode_text(query)
 
     vec = (iv + tv) / 2
-    return rank(vec.cpu().numpy().astype("float32"))
+    vec = vec / np.linalg.norm(vec, axis=1, keepdims=True)
+
+    return _rank(vec.astype("float32"), k)

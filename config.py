@@ -4,8 +4,6 @@ METADATA_BLOB = "metadata/metadata.csv"
 IMAGE_PREFIX = "images/"
 ARTIFACT_PREFIX = "artifacts/"
 
-MODEL_NAME = "ViT-B/32"
-
 SIM_WEIGHT = 0.6
 TREND_WEIGHT = 0.25
 RECENCY_WEIGHT = 0.15
