@@ -45,11 +45,10 @@ jobs:
           docker push \
             ${{ secrets.ACR_NAME }}.azurecr.io/fashionapi:latest
 
-      # 6️⃣ Deploy container to Azure Web App
-      - name: Deploy to Azure Web App
+      - name: Deploy to Azure Container App
         run: |
-          az webapp config container set \
+          az containerapp update \
             --name ${{ secrets.WEBAPP_NAME }} \
             --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --docker-custom-image-name ${{ secrets.ACR_NAME }}.azurecr.io/fashionapi:latest \
-            --docker-registry-server-url https://${{ secrets.ACR_NAME }}.azurecr.io
+            --image ${{ secrets.ACR_NAME }}.azurecr.io/fashionapi:latest \
+            --registry-server ${{ secrets.ACR_NAME }}.azurecr.io
