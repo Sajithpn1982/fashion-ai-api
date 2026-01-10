@@ -3,12 +3,15 @@ import faiss
 import numpy as np
 import pickle
 import open_clip
-
 from PIL import Image
 from fastapi import APIRouter, UploadFile, File, Form
 
-from azure_blob import download_blob
+from azure_blob import download_blob, image_url_from_local_path
 from config import TOP_K_RESULTS
+
+# =====================================================
+# CONFIG
+# =====================================================
 
 DEVICE = "cpu"
 
@@ -66,7 +69,7 @@ def load_resources():
     print(f"✅ Loaded {_index.ntotal} embeddings")
 
 # =====================================================
-# HELPERS
+# EMBEDDING HELPERS
 # =====================================================
 
 def _normalize(vec: torch.Tensor) -> np.ndarray:
@@ -85,6 +88,10 @@ def _encode_image(image: Image.Image) -> np.ndarray:
         emb = _model.encode_image(img)
     return _normalize(emb)
 
+# =====================================================
+# RANKING (AZURE IMAGE URL ADDED HERE)
+# =====================================================
+
 def _rank(vec: np.ndarray, k: int):
     scores, ids = _index.search(vec, k)
     results = []
@@ -92,6 +99,12 @@ def _rank(vec: np.ndarray, k: int):
     for score, idx in zip(scores[0], ids[0]):
         item = _metadata[idx].copy()
         item["similarity"] = float(score)
+
+        #  Generate Azure Blob image URL (with SAS)
+        item["image_url"] = [
+            image_url_from_local_path(item["image_path"])
+        ]
+
         results.append(item)
 
     return results
