@@ -21,13 +21,20 @@ router = APIRouter(
 # =====================================================
 # AZURE TABLE STORAGE CLIENT
 # =====================================================
-
 table_service = TableServiceClient.from_connection_string(
     CONNECTION_STRING
 )
 
+# ✅ Table creation happens on SERVICE, not client
+table_service = TableServiceClient.from_connection_string(
+    CONNECTION_STRING
+)
+
+# ✅ Table creation happens on SERVICE, not client
+table_service.create_table_if_not_exists(TABLE_NAME)
+
 table = table_service.get_table_client(TABLE_NAME)
-table.create_table_if_not_exists()
+
 
 # =====================================================
 # UTILITIES
