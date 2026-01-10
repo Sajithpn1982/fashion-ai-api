@@ -50,4 +50,4 @@ jobs:
           az containerapp update \
             --name ${{ secrets.WEBAPP_NAME }} \
             --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --image ${{ secrets.ACR_NAME }}.azurecr.io/fashionapi:${{ github.sha }}
+            --image ${{ secrets.ACR_NAME }}.azurecr.io/fashionapi:$latest

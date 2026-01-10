@@ -23,7 +23,7 @@ router = APIRouter(
 # =====================================================
 
 service = TableServiceClient.from_connection_string(
-    AZURE_STORAGE_CONNECTION_STRING
+    CONNECTION_STRING
 )
 
 service.create_table_if_not_exists(PRODUCT_LIKES_TABLE)
