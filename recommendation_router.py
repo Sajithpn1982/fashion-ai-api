@@ -31,7 +31,7 @@ _index = None
 _metadata = None
 
 # =====================================================
-# LAZY LOADER (RUNS ON FIRST REQUEST ONLY)
+# LAZY LOADER
 # =====================================================
 
 def load_resources():
@@ -52,7 +52,7 @@ def load_resources():
 
     _tokenizer = open_clip.get_tokenizer("ViT-B-32")
 
-    # ---- FAISS + METADATA (cached in /tmp) ----
+    # ---- FAISS + METADATA ----
     index_path = download_blob("image_embeddings.faiss")
     meta_path = download_blob("metadata.pkl")
 
@@ -73,7 +73,9 @@ def load_resources():
 # =====================================================
 
 def _normalize(vec: torch.Tensor) -> np.ndarray:
-    vec = vec / vec.norm(dim=-1, keepdim=True)
+    norm = vec.norm(dim=-1, keepdim=True)
+    norm = torch.clamp(norm, min=1e-6)
+    vec = vec / norm
     return vec.cpu().numpy().astype("float32")
 
 def _encode_text(text: str) -> np.ndarray:
@@ -89,18 +91,28 @@ def _encode_image(image: Image.Image) -> np.ndarray:
     return _normalize(emb)
 
 # =====================================================
-# RANKING (AZURE IMAGE URL ADDED HERE)
+# RANKING (SAFE)
 # =====================================================
 
 def _rank(vec: np.ndarray, k: int):
+    # 🚨 No data in index
+    if _index.ntotal == 0:
+        return []
+
+    k = min(k, _index.ntotal)
+
     scores, ids = _index.search(vec, k)
     results = []
 
     for score, idx in zip(scores[0], ids[0]):
+        # 🚨 FAISS uses -1 when no match
+        if idx < 0:
+            continue
+
         item = _metadata[idx].copy()
         item["similarity"] = float(score)
 
-        #  Generate Azure Blob image URL (with SAS)
+        # Azure Blob URL
         item["image_url"] = [
             image_url_from_local_path(item["image_path"])
         ]
@@ -116,6 +128,10 @@ def _rank(vec: np.ndarray, k: int):
 @router.get("/recommend/text")
 def recommend_text(query: str, k: int = TOP_K_RESULTS):
     load_resources()
+
+    if _index.ntotal == 0:
+        return []
+
     vec = _encode_text(query)
     return _rank(vec, k)
 
@@ -125,6 +141,10 @@ async def recommend_image(
     k: int = TOP_K_RESULTS
 ):
     load_resources()
+
+    if _index.ntotal == 0:
+        return []
+
     image = Image.open(file.file).convert("RGB")
     vec = _encode_image(image)
     return _rank(vec, k)
@@ -137,12 +157,19 @@ async def recommend_hybrid(
 ):
     load_resources()
 
+    if _index.ntotal == 0:
+        return []
+
     image = Image.open(file.file).convert("RGB")
 
     iv = _encode_image(image)
     tv = _encode_text(query)
 
     vec = (iv + tv) / 2
-    vec = vec / np.linalg.norm(vec, axis=1, keepdims=True)
+
+    # Safe normalization
+    norm = np.linalg.norm(vec, axis=1, keepdims=True)
+    norm = np.clip(norm, a_min=1e-6, a_max=None)
+    vec = vec / norm
 
     return _rank(vec.astype("float32"), k)
