@@ -176,14 +176,17 @@ def rank_products(vec: np.ndarray, k: int):
 @router.get("/recommend/text")
 def recommend_text(query: str, k: int = TOP_K_RESULTS):
     load_resources()
+    print("Loaded all resources")
     stm_cleanup()
+    print("STM cleaned")
 
     vec = encode_text(query)
+    print("Encoded")
     store_stm(vec, query)
 
     if "remember" in query.lower() or "favorite" in query.lower():
         store_ltm(vec, query)
-
+    print("ranking")
     return rank_products(vec, k)
 
 @router.post("/recommend/image")

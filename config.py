@@ -1,12 +1,15 @@
-DATA_CONTAINER = "fashion-data"
+import os
 
-METADATA_BLOB = "metadata/metadata.csv"
-IMAGE_PREFIX = "images/"
-ARTIFACT_PREFIX = "artifacts/"
-
-SIM_WEIGHT = 0.6
-TREND_WEIGHT = 0.25
-RECENCY_WEIGHT = 0.15
-
-TOP_K_CANDIDATES = 20
+DEVICE = "cpu"
+VECTOR_DIM = 512
 TOP_K_RESULTS = 5
+STM_TTL = 1800  # 30 minutes
+
+TMP_DIR = "/tmp"
+LTM_INDEX_BLOB = "memory/ltm.index"
+LTM_META_BLOB = "memory/ltm.meta.pkl"
+
+# 🔐 JWT CONFIG (THIS WAS MISSING)
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALG = "HS256"
+USER_ID_CLAIM = "sub"
