@@ -1,11 +1,14 @@
+import os
+import uuid
+import time
+import pickle
+import numpy as np
 import torch
 import faiss
-import numpy as np
-import pickle
 import open_clip
+
 from PIL import Image
 from fastapi import APIRouter, UploadFile, File, Form
-
 from azure_blob import download_blob, image_url_from_local_path
 from config import TOP_K_RESULTS
 
@@ -14,6 +17,14 @@ from config import TOP_K_RESULTS
 # =====================================================
 
 DEVICE = "cpu"
+VECTOR_DIM = 512
+STM_TTL = 1800  # 30 minutes
+
+DATA_DIR = "data"
+LTM_INDEX_PATH = f"{DATA_DIR}/ltm.index"
+LTM_META_PATH = f"{DATA_DIR}/ltm.meta.pkl"
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 router = APIRouter(
     prefix="/fashion",
@@ -21,119 +32,159 @@ router = APIRouter(
 )
 
 # =====================================================
-# GLOBALS (LAZY-LOADED)
+# GLOBALS (LAZY)
 # =====================================================
 
 _model = None
 _preprocess = None
 _tokenizer = None
-_index = None
-_metadata = None
+
+# Product index
+_product_index = None
+_product_meta = None
+
+# STM / LTM
+_stm_index = None
+_stm_meta = []
+_stm_ts = []
+
+_ltm_index = None
+_ltm_meta = []
 
 # =====================================================
-# LAZY LOADER
+# LOAD EVERYTHING
 # =====================================================
 
 def load_resources():
-    global _model, _preprocess, _tokenizer, _index, _metadata
+    global _model, _preprocess, _tokenizer
+    global _product_index, _product_meta
+    global _stm_index, _ltm_index, _ltm_meta
 
     if _model is not None:
         return
 
-    print("🔄 Lazy loading CLIP + FAISS...")
+    print("🔄 Loading CLIP + Product FAISS + Memory...")
 
-    # ---- OpenCLIP ----
+    # ---- CLIP ----
     _model, _, _preprocess = open_clip.create_model_and_transforms(
-        model_name="ViT-B-32",
-        pretrained="openai"
+        "ViT-B-32", pretrained="openai"
     )
-    _model = _model.to(DEVICE)
-    _model.eval()
-
+    _model.eval().to(DEVICE)
     _tokenizer = open_clip.get_tokenizer("ViT-B-32")
 
-    # ---- FAISS + METADATA ----
+    # ---- PRODUCT FAISS ----
     index_path = download_blob("image_embeddings.faiss")
     meta_path = download_blob("metadata.pkl")
 
-    _index = faiss.read_index(index_path)
-
+    _product_index = faiss.read_index(index_path)
     with open(meta_path, "rb") as f:
-        _metadata = pickle.load(f)
+        _product_meta = pickle.load(f)
 
-    if _index.ntotal != len(_metadata):
-        raise RuntimeError(
-            f"FAISS index ({_index.ntotal}) != metadata ({len(_metadata)})"
-        )
+    # ---- STM ----
+    _stm_index = faiss.IndexFlatIP(VECTOR_DIM)
 
-    print(f"✅ Loaded {_index.ntotal} embeddings")
+    # ---- LTM ----
+    if os.path.exists(LTM_INDEX_PATH):
+        _ltm_index = faiss.read_index(LTM_INDEX_PATH)
+        with open(LTM_META_PATH, "rb") as f:
+            _ltm_meta = pickle.load(f)
+    else:
+        _ltm_index = faiss.IndexFlatIP(VECTOR_DIM)
+        _ltm_meta = []
+
+    print(f"✅ Products loaded: {_product_index.ntotal}")
 
 # =====================================================
-# EMBEDDING HELPERS
+# EMBEDDINGS
 # =====================================================
 
-def _normalize(vec: torch.Tensor) -> np.ndarray:
-    norm = vec.norm(dim=-1, keepdim=True)
-    norm = torch.clamp(norm, min=1e-6)
-    vec = vec / norm
-    return vec.cpu().numpy().astype("float32")
+def _normalize(x: torch.Tensor) -> np.ndarray:
+    x = x / torch.clamp(x.norm(dim=-1, keepdim=True), min=1e-6)
+    return x.cpu().numpy().astype("float32")
 
-def _encode_text(text: str) -> np.ndarray:
+def encode_text(text: str) -> np.ndarray:
     tokens = _tokenizer([text]).to(DEVICE)
     with torch.no_grad():
         emb = _model.encode_text(tokens)
     return _normalize(emb)
 
-def _encode_image(image: Image.Image) -> np.ndarray:
+def encode_image(image: Image.Image) -> np.ndarray:
     img = _preprocess(image).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         emb = _model.encode_image(img)
     return _normalize(emb)
 
 # =====================================================
-# RANKING (SAFE)
+# STM / LTM HELPERS
 # =====================================================
 
-def _rank(vec: np.ndarray, k: int):
-    # 🚨 No data in index
-    if _index.ntotal == 0:
-        return []
+def stm_cleanup():
+    global _stm_index, _stm_meta, _stm_ts
+    now = time.time()
+    keep = [i for i,t in enumerate(_stm_ts) if now - t < STM_TTL]
+    if len(keep) == len(_stm_ts):
+        return
 
-    k = min(k, _index.ntotal)
+    new_idx = faiss.IndexFlatIP(VECTOR_DIM)
+    new_meta, new_ts = [], []
 
-    scores, ids = _index.search(vec, k)
+    for i in keep:
+        new_idx.add(_stm_index.reconstruct(i).reshape(1,-1))
+        new_meta.append(_stm_meta[i])
+        new_ts.append(_stm_ts[i])
+
+    _stm_index, _stm_meta, _stm_ts = new_idx, new_meta, new_ts
+
+def store_stm(vec, text):
+    _stm_index.add(vec)
+    _stm_meta.append(text)
+    _stm_ts.append(time.time())
+
+def store_ltm(vec, text):
+    _ltm_index.add(vec)
+    _ltm_meta.append(text)
+    faiss.write_index(_ltm_index, LTM_INDEX_PATH)
+    with open(LTM_META_PATH, "wb") as f:
+        pickle.dump(_ltm_meta, f)
+
+# =====================================================
+# PRODUCT RANKING (SAME OUTPUT)
+# =====================================================
+
+def rank_products(vec: np.ndarray, k: int):
+    k = min(k, _product_index.ntotal)
+    scores, ids = _product_index.search(vec, k)
+
     results = []
-
     for score, idx in zip(scores[0], ids[0]):
-        # 🚨 FAISS uses -1 when no match
         if idx < 0:
             continue
 
-        item = _metadata[idx].copy()
+        item = _product_meta[idx].copy()
         item["similarity"] = float(score)
-
-        # Azure Blob URL
         item["image_url"] = [
             image_url_from_local_path(item["image_path"])
         ]
-
         results.append(item)
 
     return results
 
 # =====================================================
-# ROUTES
+# ROUTES (IDENTICAL OUTPUT)
 # =====================================================
 
 @router.get("/recommend/text")
 def recommend_text(query: str, k: int = TOP_K_RESULTS):
     load_resources()
+    stm_cleanup()
 
-    if _index.ntotal == 0:
-        return []
+    vec = encode_text(query)
+    store_stm(vec, query)
 
-    vec = _encode_text(query)
-    return _rank(vec, k)
+    if "remember" in query.lower() or "favorite" in query.lower():
+        store_ltm(vec, query)
+
+    return rank_products(vec, k)
 
 @router.post("/recommend/image")
 async def recommend_image(
@@ -141,13 +192,13 @@ async def recommend_image(
     k: int = TOP_K_RESULTS
 ):
     load_resources()
-
-    if _index.ntotal == 0:
-        return []
+    stm_cleanup()
 
     image = Image.open(file.file).convert("RGB")
-    vec = _encode_image(image)
-    return _rank(vec, k)
+    vec = encode_image(image)
+
+    store_stm(vec, "image_query")
+    return rank_products(vec, k)
 
 @router.post("/recommend/hybrid")
 async def recommend_hybrid(
@@ -156,20 +207,17 @@ async def recommend_hybrid(
     k: int = TOP_K_RESULTS
 ):
     load_resources()
-
-    if _index.ntotal == 0:
-        return []
+    stm_cleanup()
 
     image = Image.open(file.file).convert("RGB")
-
-    iv = _encode_image(image)
-    tv = _encode_text(query)
+    iv = encode_image(image)
+    tv = encode_text(query)
 
     vec = (iv + tv) / 2
+    vec /= np.clip(np.linalg.norm(vec, axis=1, keepdims=True), 1e-6, None)
 
-    # Safe normalization
-    norm = np.linalg.norm(vec, axis=1, keepdims=True)
-    norm = np.clip(norm, a_min=1e-6, a_max=None)
-    vec = vec / norm
+    store_stm(vec, query)
+    if "remember" in query.lower():
+        store_ltm(vec, query)
 
-    return _rank(vec.astype("float32"), k)
+    return rank_products(vec.astype("float32"), k)

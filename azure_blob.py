@@ -169,3 +169,9 @@ def image_url_from_local_path(local_path: str) -> str:
         f"{CONTAINER_NAME}/{blob_path}"
         f"{sas}"
     )
+def upload_blob(local_path: str, blob_name: str):
+    container = _get_container_client()
+    blob = container.get_blob_client(blob_name)
+
+    with open(local_path, "rb") as f:
+        blob.upload_blob(f, overwrite=True)

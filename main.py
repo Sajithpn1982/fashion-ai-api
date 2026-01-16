@@ -6,6 +6,7 @@ from recommendation_router import router as fashion_router
 from fashion_analytics_router import router as analytics_router
 from fashion_likes_router import router as likes_router
 from fashion_purchase_router import router as purchase_router
+from recommendation_router_with_memory import router as recm_router
 
 app = FastAPI(title="Fashion recommendation APIs")
 
@@ -22,6 +23,7 @@ app.include_router(fashion_router)
 app.include_router(analytics_router)
 app.include_router(likes_router)
 app.include_router(purchase_router)
+app.include_router(recm_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
